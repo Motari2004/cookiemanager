@@ -20,8 +20,10 @@
             border-radius: 20px;
             box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
             padding: 40px;
-            max-width: 500px;
+            max-width: 900px;
             width: 100%;
+            max-height: 95vh;
+            overflow-y: auto;
         }
         .header { text-align: center; margin-bottom: 30px; }
         .header h1 { color: #333; font-size: 28px; margin-bottom: 8px; }
@@ -113,7 +115,7 @@
         .log-box {
             margin-top: 20px; padding: 15px;
             background: #1a1a2e; border-radius: 10px;
-            max-height: 250px; overflow-y: auto;
+            max-height: 200px; overflow-y: auto;
             font-family: 'Courier New', monospace; font-size: 12px;
         }
         .log-box::-webkit-scrollbar { width: 6px; }
@@ -124,6 +126,51 @@
         .log-entry.success { color: #2ed573; }
         .log-entry.info { color: #70a1ff; }
         .log-entry.warning { color: #ffa502; }
+        .screenshot-box {
+            margin-top: 20px; padding: 15px;
+            background: #f8f9fa; border-radius: 10px;
+            border-left: 4px solid #17a2b8;
+        }
+        .screenshot-box h3 { font-size: 14px; color: #333; margin-bottom: 10px; }
+        .screenshot-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .screenshot-item {
+            background: white;
+            border-radius: 8px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            text-align: center;
+            transition: all 0.3s;
+        }
+        .screenshot-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        .screenshot-item a {
+            display: block;
+            color: #667eea;
+            text-decoration: none;
+            font-size: 12px;
+            word-break: break-all;
+        }
+        .screenshot-item a:hover {
+            text-decoration: underline;
+        }
+        .screenshot-item .size {
+            display: block;
+            color: #999;
+            font-size: 10px;
+            margin-top: 4px;
+        }
+        .screenshot-item .time {
+            display: block;
+            color: #999;
+            font-size: 10px;
+        }
         .spinner {
             display: inline-block; width: 16px; height: 16px;
             border: 3px solid rgba(255, 255, 255, 0.3); border-radius: 50%;
@@ -140,7 +187,7 @@
         <div class="header">
             <div class="instagram-logo"></div>
             <h1>Instagram Login</h1>
-            <p>Using Playwright Chromium browser</p>
+            <p>Using Playwright Chromium with Stealth Mode</p>
         </div>
 
         <div class="warning-box">
@@ -149,11 +196,8 @@
         </div>
 
         <div class="info-box">
-            <h4>✅ Browser Ready:</h4>
-            <p>Using your installed Playwright Chromium</p>
-            <p style="font-size: 12px; margin-top: 5px; color: #0c5460;">
-                📍 C:\Users\PC\AppData\Local\ms-playwright\chromium-1234
-            </p>
+            <h4>✅ Stealth Mode Enabled:</h4>
+            <p>Anti-detection measures active</p>
         </div>
 
         <form id="loginForm">
@@ -201,6 +245,14 @@
             </div>
         </div>
 
+        <div class="screenshot-box">
+            <h3>📸 Screenshots</h3>
+            <button class="btn btn-secondary" id="refreshScreenshotsBtn" style="margin-bottom: 10px;">🔄 Refresh Screenshots</button>
+            <div id="screenshotList">
+                <p style="color: #666; font-size: 13px;">No screenshots yet. Click "Initialize Browser" and "Login" to generate screenshots.</p>
+            </div>
+        </div>
+
         <div class="log-box" id="logBox">
             <div class="log-entry info">🔄 Waiting for actions...</div>
         </div>
@@ -239,10 +291,38 @@
             }
         }
 
+        async function loadScreenshots() {
+            try {
+                const response = await fetch('/api/screenshots');
+                const data = await response.json();
+                const container = document.getElementById('screenshotList');
+                
+                if (data.success && data.screenshots && data.screenshots.length > 0) {
+                    let html = '<div class="screenshot-grid">';
+                    data.screenshots.forEach(screenshot => {
+                        const sizeKB = (screenshot.size / 1024).toFixed(1);
+                        html += `
+                            <div class="screenshot-item">
+                                <a href="${screenshot.url}" target="_blank">📷 ${screenshot.name}</a>
+                                <span class="time">${new Date(screenshot.timestamp).toLocaleString()}</span>
+                                <span class="size">${sizeKB} KB</span>
+                            </div>
+                        `;
+                    });
+                    html += '</div>';
+                    container.innerHTML = html;
+                } else {
+                    container.innerHTML = '<p style="color: #666; font-size: 13px;">No screenshots found. Run the login process to generate screenshots.</p>';
+                }
+            } catch (error) {
+                console.error('Error loading screenshots:', error);
+            }
+        }
+
         document.getElementById('initBtn').addEventListener('click', async function() {
             const headless = document.getElementById('headless').checked;
             this.disabled = true;
-            addLog('🚀 Initializing Playwright Chromium browser...', 'info');
+            addLog('🚀 Initializing Playwright Chromium browser with stealth mode...', 'info');
             addLog('👁️ Watch the browser window that opens!', 'info');
             
             try {
@@ -255,6 +335,7 @@
                 if (data.success) {
                     addLog('✅ ' + data.message, 'success');
                     await updateStatus();
+                    setTimeout(loadScreenshots, 1000);
                 } else {
                     addLog(`❌ Failed: ${data.message}`, 'error');
                 }
@@ -291,6 +372,7 @@
                 if (data.success) {
                     addLog(`✅ ${data.message}`, 'success');
                     await updateStatus();
+                    setTimeout(loadScreenshots, 1000);
                 } else {
                     addLog(`❌ ${data.message}`, 'error');
                     await updateStatus();
@@ -322,10 +404,17 @@
             }
         });
 
+        document.getElementById('refreshScreenshotsBtn').addEventListener('click', loadScreenshots);
+
+        // Auto-refresh every 10 seconds
         setInterval(updateStatus, 3000);
+        setInterval(loadScreenshots, 10000);
+        
+        // Initial loads
         updateStatus();
+        loadScreenshots();
         addLog('🚀 UI ready. Click "Initialize Browser" to start.', 'info');
-        addLog('✅ Using your installed Playwright Chromium browser', 'success');
+        addLog('✅ Stealth mode enabled - anti-detection active', 'success');
     </script>
 </body>
 </html>

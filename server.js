@@ -13,6 +13,9 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
+// Serve static files from data directory for screenshots
+app.use('/data', express.static('data'));
+
 // Logger function
 function logMessage(message, type = 'info') {
     const timestamp = new Date().toISOString();
@@ -65,7 +68,7 @@ class InstagramService {
 
     async initialize(headless = false) {
         try {
-            logMessage('🚀 Launching browser...');
+            logMessage('🚀 Launching browser with stealth mode...');
             
             const chromePath = await this.findChrome();
             const isRender = process.env.RENDER === 'true' || process.env.NODE_ENV === 'production';
@@ -88,6 +91,33 @@ class InstagramService {
                     '--disable-site-isolation-trials',
                     '--disable-web-security',
                     '--disable-features=BlockInsecurePrivateNetworkRequests',
+                    '--disable-features=OptimizationGuideModelDownloading',
+                    '--disable-features=MediaRouter',
+                    '--disable-features=TranslateUI',
+                    '--disable-ipc-flooding-protection',
+                    '--disable-hang-monitor',
+                    '--disable-prompt-on-repost',
+                    '--disable-client-side-phishing-detection',
+                    '--disable-default-apps',
+                    '--disable-sync',
+                    '--disable-domain-reliability',
+                    '--disable-component-update',
+                    '--disable-background-networking',
+                    '--disable-breakpad',
+                    '--disable-crash-reporter',
+                    '--disable-logging',
+                    '--disable-notifications',
+                    '--no-first-run',
+                    '--no-default-browser-check',
+                    '--safebrowsing-disable-auto-update',
+                    '--disable-bundled-ppapi-flash',
+                    '--disable-print-preview',
+                    '--disable-pdf-viewer',
+                    '--disable-component-extensions-with-background-pages',
+                    '--disable-field-trial-config',
+                    '--disable-features=ChromeWhatsNewUI',
+                    '--disable-features=HttpsOnlyMode',
+                    '--disable-features=CertificateTransparencyComponentUpdater',
                 ]
             };
 
@@ -107,30 +137,78 @@ class InstagramService {
                 viewport: { width: 1280, height: 720 },
                 userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 locale: 'en-US',
-                timezoneId: 'America/New_York'
+                timezoneId: 'America/New_York',
+                permissions: ['geolocation'],
+                geolocation: { latitude: 40.7128, longitude: -74.0060 },
+                deviceScaleFactor: 1,
+                hasTouch: false,
+                isMobile: false,
+                extraHTTPHeaders: {
+                    'Accept-Language': 'en-US,en;q=0.9',
+                },
             });
 
             this.page = await this.context.newPage();
             
+            // Enhanced stealth script
             await this.page.addInitScript(() => {
+                // Overwrite navigator properties
                 Object.defineProperty(navigator, 'webdriver', {
-                    get: () => false,
+                    get: () => undefined,
                 });
-                window.chrome = { runtime: {} };
+                
                 Object.defineProperty(navigator, 'plugins', {
                     get: () => [1, 2, 3, 4, 5],
                 });
+                
                 Object.defineProperty(navigator, 'languages', {
                     get: () => ['en-US', 'en'],
                 });
                 
-                // Overwrite navigator properties
-                const newProto = navigator.__proto__;
-                delete newProto.webdriver;
+                // Add chrome object
+                window.chrome = { 
+                    runtime: {},
+                    loadTimes: function() {},
+                    csi: function() {},
+                    app: {}
+                };
+                
+                // Add missing properties
+                Object.defineProperty(document, 'hidden', {
+                    get: () => false,
+                });
+                
+                // Overwrite permissions
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                        Promise.resolve({ state: Notification.permission }) :
+                        originalQuery(parameters)
+                );
+                
+                // Remove PhantomJS detection
+                Object.defineProperty(navigator, 'phantom', {
+                    get: () => undefined,
+                });
+                
+                // Remove CallPhantom detection
+                Object.defineProperty(navigator, '_phantom', {
+                    get: () => undefined,
+                });
+                
+                // Remove selenium detection
+                Object.defineProperty(window, 'callPhantom', {
+                    get: () => undefined,
+                });
+                
+                // Remove webdriver detection
+                Object.defineProperty(document, '$cdc_asdjflasutopfhvcZLmcfl_', {
+                    get: () => undefined,
+                });
             });
 
             this.isInitialized = true;
-            logMessage('✅ Browser opened successfully!', 'success');
+            logMessage('✅ Browser opened successfully with stealth mode!', 'success');
             
             return this.page;
         } catch (error) {
@@ -147,9 +225,18 @@ class InstagramService {
             // Random delay to avoid detection
             await this.page.waitForTimeout(Math.random() * 1000 + 500);
             
+            // First go to Instagram homepage
+            await this.page.goto('https://www.instagram.com/', {
+                waitUntil: 'networkidle',
+                timeout: 30000
+            });
+            
+            await this.page.waitForTimeout(Math.random() * 1000 + 500);
+            
+            // Then navigate to login
             await this.page.goto('https://www.instagram.com/accounts/login/', {
                 waitUntil: 'networkidle',
-                timeout: 60000
+                timeout: 30000
             });
             
             logMessage('✅ Page loaded!', 'success');
@@ -159,10 +246,10 @@ class InstagramService {
             
             // Check for challenge page
             const pageContent = await this.page.content();
-            if (pageContent.includes('challenge') || pageContent.includes('verify')) {
+            if (pageContent.includes('challenge') || pageContent.includes('verify') || pageContent.includes('security')) {
                 logMessage('⚠️ Instagram challenge page detected!', 'warning');
                 logMessage('🔄 Please complete the challenge manually in the browser', 'info');
-                await this.page.waitForTimeout(10000);
+                await this.page.waitForTimeout(15000);
             }
             
             logMessage('⏳ Waiting for login form...');
@@ -175,7 +262,10 @@ class InstagramService {
                 'input[aria-label*="phone" i]',
                 'input[aria-label*="email" i]',
                 'form input[type="text"]',
-                'form input:first-child'
+                'form input:first-child',
+                'input[name="email"]',
+                '[name="username"]',
+                '[name="email"]'
             ];
             
             let found = false;
@@ -196,7 +286,7 @@ class InstagramService {
             if (!found) {
                 // Try XPath
                 try {
-                    const xpath = '//input[@name="username" or @type="text"]';
+                    const xpath = '//input[@name="username" or @type="text" or @name="email"]';
                     await this.page.waitForSelector(`xpath=${xpath}`, { timeout: 5000 });
                     logMessage('✅ Login form found with XPath!', 'success');
                     found = true;
@@ -210,6 +300,15 @@ class InstagramService {
                 try {
                     const inputs = await this.page.$$('input');
                     logMessage(`📝 Found ${inputs.length} input elements on page`, 'info');
+                    
+                    // Log all input types for debugging
+                    for (let i = 0; i < Math.min(inputs.length, 10); i++) {
+                        const type = await inputs[i].getAttribute('type');
+                        const name = await inputs[i].getAttribute('name');
+                        const placeholder = await inputs[i].getAttribute('placeholder');
+                        logMessage(`   Input ${i+1}: type=${type}, name=${name}, placeholder=${placeholder}`, 'info');
+                    }
+                    
                     if (inputs.length > 0) {
                         found = true;
                         logMessage('✅ Found input elements, attempting login', 'success');
@@ -218,8 +317,9 @@ class InstagramService {
             }
             
             // Save debug screenshot
-            await this.page.screenshot({ path: 'data/login_page_debug.png' });
-            logMessage('📸 Debug screenshot saved: data/login_page_debug.png');
+            const timestamp = Date.now();
+            await this.page.screenshot({ path: `data/login_page_debug_${timestamp}.png` });
+            logMessage(`📸 Debug screenshot saved: data/login_page_debug_${timestamp}.png`);
             
             await this.page.waitForTimeout(2000);
             
@@ -227,8 +327,9 @@ class InstagramService {
         } catch (error) {
             logMessage(`❌ Navigation error: ${error.message}`, 'error');
             try {
-                await this.page.screenshot({ path: 'data/navigation_error.png' });
-                logMessage('📸 Error screenshot saved: data/navigation_error.png');
+                const timestamp = Date.now();
+                await this.page.screenshot({ path: `data/navigation_error_${timestamp}.png` });
+                logMessage(`📸 Error screenshot saved: data/navigation_error_${timestamp}.png`);
             } catch (e) {}
             return false;
         }
@@ -243,7 +344,9 @@ class InstagramService {
                 'input[type="text"]',
                 'input[placeholder*="username" i]',
                 'form input',
-                'input[aria-label*="username" i]'
+                'input[aria-label*="username" i]',
+                '[name="username"]',
+                '[name="email"]'
             ];
             
             for (const selector of selectors) {
@@ -258,6 +361,13 @@ class InstagramService {
                     continue;
                 }
             }
+            
+            // Try to find any input as fallback
+            try {
+                await this.page.waitForSelector('input', { timeout: 5000 });
+                logMessage('✅ Found input elements on page, proceeding...', 'success');
+                return true;
+            } catch (e) {}
             
             logMessage('⚠️ Login form not found with standard selectors', 'warning');
             return false;
@@ -304,6 +414,15 @@ class InstagramService {
                 const field = await this.page.locator('input[type="text"]').first();
                 if (await field.isVisible()) {
                     logMessage('✅ Found username field by type', 'success');
+                    return field;
+                }
+            } catch (e) {}
+            
+            // Try by aria-label
+            try {
+                const field = await this.page.locator('input[aria-label*="username" i]').first();
+                if (await field.isVisible()) {
+                    logMessage('✅ Found username field by aria-label', 'success');
                     return field;
                 }
             } catch (e) {}
@@ -749,8 +868,9 @@ class InstagramService {
             logMessage(`❌ Login error: ${error.message}`, 'error');
             try {
                 if (this.page) {
-                    await this.page.screenshot({ path: 'data/error_screenshot.png' });
-                    logMessage('📸 Error screenshot saved: data/error_screenshot.png');
+                    const timestamp = Date.now();
+                    await this.page.screenshot({ path: `data/error_screenshot_${timestamp}.png` });
+                    logMessage(`📸 Error screenshot saved: data/error_screenshot_${timestamp}.png`);
                 }
             } catch (e) {}
             return { success: false, message: `Error: ${error.message}` };
@@ -772,7 +892,9 @@ class InstagramService {
                 'a[href="/accounts/edit/"]',
                 'svg[aria-label="Home"]',
                 'nav[role="navigation"]',
-                '[data-testid="user-avatar"]'
+                '[data-testid="user-avatar"]',
+                '[role="button"]:has-text("Create")',
+                'a[href="/direct/inbox/"]'
             ];
 
             for (const selector of indicators) {
@@ -918,6 +1040,61 @@ app.post('/api/close', async (req, res) => {
     }
 });
 
+// Get list of screenshots
+app.get('/api/screenshots', (req, res) => {
+    try {
+        const dataDir = path.join(__dirname, 'data');
+        if (!fs.existsSync(dataDir)) {
+            return res.json({
+                success: true,
+                screenshots: []
+            });
+        }
+        
+        const files = fs.readdirSync(dataDir);
+        const screenshots = files
+            .filter(file => file.endsWith('.png') || file.endsWith('.jpg'))
+            .map(file => ({
+                name: file,
+                url: `/data/${file}`,
+                timestamp: fs.statSync(path.join(dataDir, file)).mtime,
+                size: fs.statSync(path.join(dataDir, file)).size
+            }))
+            .sort((a, b) => b.timestamp - a.timestamp);
+        
+        res.json({
+            success: true,
+            screenshots: screenshots
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+});
+
+// Download specific screenshot
+app.get('/api/download/:filename', (req, res) => {
+    try {
+        const filename = req.params.filename;
+        const filePath = path.join(__dirname, 'data', filename);
+        
+        // Security check - prevent directory traversal
+        if (!filename.match(/^[a-zA-Z0-9_\-\.]+\.(png|jpg|jpeg)$/)) {
+            return res.status(400).json({ error: 'Invalid filename' });
+        }
+        
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json({ error: 'File not found' });
+        }
+        
+        res.download(filePath);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Health check endpoint for Render
 app.get('/health', (req, res) => {
     res.status(200).json({ 
@@ -944,5 +1121,22 @@ app.listen(PORT, () => {
     console.log(`3. Watch the browser window for results`);
     console.log(`4. If WhatsApp verification appears, enter the code in the browser`);
     console.log(`\n🔍 The script will detect WhatsApp verification requests`);
-    console.log(`📌 It will wait for you to enter the verification code\n`);
+    console.log(`📌 It will wait for you to enter the verification code`);
+    console.log(`\n📸 Screenshots saved to /data/ directory`);
+    console.log(`   View them at: http://localhost:${PORT}/data/`);
+    console.log(`   API: http://localhost:${PORT}/api/screenshots`);
+    console.log(`\n✅ Stealth mode enabled with anti-detection measures\n`);
+});
+
+// Handle graceful shutdown
+process.on('SIGTERM', async () => {
+    console.log('Received SIGTERM, closing browser...');
+    await instagramService.close();
+    process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+    console.log('Received SIGINT, closing browser...');
+    await instagramService.close();
+    process.exit(0);
 });

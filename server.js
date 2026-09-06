@@ -24,32 +24,40 @@ class InstagramService {
         this.browser = null;
         this.context = null;
         this.page = null;
-        this.cookiePath = path.join(__dirname, 'cookie.json');
+        this.cookiePath = path.join(__dirname, 'data', 'cookie.json');
         this.isLoggedIn = false;
         this.isInitialized = false;
-        this.loginTimeout = parseInt(process.env.LOGIN_TIMEOUT) || 120;
+        
+        // Ensure data directory exists
+        const dataDir = path.join(__dirname, 'data');
+        if (!fs.existsSync(dataDir)) {
+            fs.mkdirSync(dataDir, { recursive: true });
+        }
     }
 
-    async findExistingChrome() {
-        // For Render, we'll use the Playwright Chromium
-        // Check common paths
+    async findChrome() {
         const possiblePaths = [
-            '/usr/bin/chromium',
-            '/usr/bin/chromium-browser',
             '/usr/bin/google-chrome',
             '/usr/bin/google-chrome-stable',
+            '/usr/bin/chromium',
+            '/usr/bin/chromium-browser',
             process.env.CHROME_PATH,
-            // Windows paths for local testing
-            'C:\\Users\\PC\\AppData\\Local\\ms-playwright\\chromium-1234\\chrome-win64\\chrome.exe',
             'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+            'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
         ].filter(Boolean);
 
         for (const chromePath of possiblePaths) {
-            if (fs.existsSync(chromePath)) {
-                logMessage(`✅ Found Chrome at: ${chromePath}`, 'success');
-                return chromePath;
+            try {
+                if (fs.existsSync(chromePath)) {
+                    logMessage(`✅ Found Chrome at: ${chromePath}`, 'success');
+                    return chromePath;
+                }
+            } catch (e) {
+                continue;
             }
         }
+        
+        logMessage('⚠️ No Chrome found, using Playwright Chromium', 'warning');
         return null;
     }
 
@@ -57,11 +65,12 @@ class InstagramService {
         try {
             logMessage('🚀 Launching browser...');
             
-            // For Render, we need to use the installed Chromium
-            const chromePath = await this.findExistingChrome();
+            const chromePath = await this.findChrome();
             
-            let launchOptions = {
-                headless: process.env.NODE_ENV === 'production' ? true : headless,
+            const isRender = process.env.RENDER === 'true' || process.env.NODE_ENV === 'production';
+            
+            const launchOptions = {
+                headless: isRender ? true : headless,
                 args: [
                     '--disable-blink-features=AutomationControlled',
                     '--disable-dev-shm-usage',
@@ -73,7 +82,9 @@ class InstagramService {
                     '--disable-background-timer-throttling',
                     '--disable-backgrounding-occluded-windows',
                     '--disable-renderer-backgrounding',
-                    '--window-size=1280,720'
+                    '--window-size=1280,720',
+                    '--disable-features=IsolateOrigins,site-per-process',
+                    '--disable-site-isolation-trials',
                 ]
             };
 
@@ -81,7 +92,13 @@ class InstagramService {
                 launchOptions.executablePath = chromePath;
             }
 
-            this.browser = await chromium.launch(launchOptions);
+            try {
+                this.browser = await chromium.launch(launchOptions);
+            } catch (e) {
+                logMessage(`⚠️ Failed with specific Chrome, trying default...`, 'warning');
+                delete launchOptions.executablePath;
+                this.browser = await chromium.launch(launchOptions);
+            }
 
             this.context = await this.browser.newContext({
                 viewport: { width: 1280, height: 720 },
@@ -114,11 +131,363 @@ class InstagramService {
         }
     }
 
-    // ... (keep all other methods the same as your original code)
-    // navigateToLogin, waitForLoginForm, findUsernameField, findPasswordField,
-    // checkForWhatsAppVerification, waitForVerification, clickRecaptcha,
-    // login, checkLoginSuccess, saveCookies, getStatus, close
-    // (Copy these methods from your original file)
+    async navigateToLogin() {
+        try {
+            logMessage('🌐 Navigating to Instagram login page...');
+            
+            await this.page.goto('https://www.instagram.com/accounts/login/', {
+                waitUntil: 'domcontentloaded',
+                timeout: 30000
+            });
+            
+            logMessage('✅ Page loaded!', 'success');
+            logMessage('⏳ Waiting for login form...');
+            
+            const usernameSelectors = [
+                'input[name="username"]',
+                'input[type="text"]',
+                'input[placeholder*="username" i]',
+                'input[placeholder*="phone" i]',
+                'input[placeholder*="email" i]'
+            ];
+            
+            let found = false;
+            for (const selector of usernameSelectors) {
+                try {
+                    await this.page.waitForSelector(selector, { 
+                        timeout: 5000,
+                        state: 'visible'
+                    });
+                    logMessage(`✅ Login form found with selector: ${selector}`, 'success');
+                    found = true;
+                    break;
+                } catch (e) {
+                    continue;
+                }
+            }
+            
+            if (!found) {
+                try {
+                    await this.page.waitForSelector('input', { 
+                        timeout: 5000,
+                        state: 'visible'
+                    });
+                    logMessage('✅ Found input fields on page', 'success');
+                    found = true;
+                } catch (e) {
+                    logMessage('❌ Could not find login form', 'error');
+                }
+            }
+            
+            await this.page.waitForTimeout(2000);
+            
+            const currentUrl = this.page.url();
+            logMessage(`📍 Current URL: ${currentUrl}`);
+            
+            return found;
+        } catch (error) {
+            logMessage(`❌ Navigation error: ${error.message}`, 'error');
+            return false;
+        }
+    }
+
+    async waitForLoginForm() {
+        try {
+            logMessage('⏳ Waiting for login form to be fully loaded...');
+            
+            const selectors = [
+                'input[name="username"]',
+                'input[type="text"]',
+                'input[placeholder*="username" i]',
+                'form input'
+            ];
+            
+            for (const selector of selectors) {
+                try {
+                    await this.page.waitForSelector(selector, { 
+                        timeout: 5000,
+                        state: 'visible'
+                    });
+                    logMessage(`✅ Login form ready with: ${selector}`, 'success');
+                    return true;
+                } catch (e) {
+                    continue;
+                }
+            }
+            
+            logMessage('⚠️ Login form not found with standard selectors', 'warning');
+            return false;
+        } catch (error) {
+            logMessage(`⚠️ Login form not found: ${error.message}`, 'warning');
+            return false;
+        }
+    }
+
+    async findUsernameField() {
+        try {
+            logMessage('🔍 Looking for username field...');
+            
+            try {
+                const usernameField = await this.page.getByRole('textbox', { 
+                    name: 'Mobile number, username or email' 
+                });
+                await usernameField.waitFor({ state: 'visible', timeout: 3000 });
+                logMessage('✅ Found username field with getByRole!', 'success');
+                return usernameField;
+            } catch (e) {}
+            
+            try {
+                const field = await this.page.locator('input[placeholder*="username" i]').first();
+                if (await field.isVisible()) {
+                    logMessage('✅ Found username field by placeholder', 'success');
+                    return field;
+                }
+            } catch (e) {}
+            
+            try {
+                const field = await this.page.locator('input[name="username"]').first();
+                if (await field.isVisible()) {
+                    logMessage('✅ Found username field by name attribute', 'success');
+                    return field;
+                }
+            } catch (e) {}
+            
+            try {
+                const field = await this.page.locator('input[type="text"]').first();
+                if (await field.isVisible()) {
+                    logMessage('✅ Found username field by type', 'success');
+                    return field;
+                }
+            } catch (e) {}
+            
+            throw new Error('Could not find username field');
+        } catch (error) {
+            logMessage(`❌ ${error.message}`, 'error');
+            throw error;
+        }
+    }
+
+    async findPasswordField() {
+        try {
+            logMessage('🔍 Looking for password field...');
+            
+            try {
+                const passwordField = await this.page.getByRole('textbox', { 
+                    name: 'Password' 
+                });
+                await passwordField.waitFor({ state: 'visible', timeout: 3000 });
+                logMessage('✅ Found password field with getByRole!', 'success');
+                return passwordField;
+            } catch (e) {}
+            
+            try {
+                const field = await this.page.locator('input[type="password"]').first();
+                if (await field.isVisible()) {
+                    logMessage('✅ Found password field by type', 'success');
+                    return field;
+                }
+            } catch (e) {}
+            
+            try {
+                const field = await this.page.locator('input[name="password"]').first();
+                if (await field.isVisible()) {
+                    logMessage('✅ Found password field by name attribute', 'success');
+                    return field;
+                }
+            } catch (e) {}
+            
+            throw new Error('Could not find password field');
+        } catch (error) {
+            logMessage(`❌ ${error.message}`, 'error');
+            throw error;
+        }
+    }
+
+    async checkForWhatsAppVerification() {
+        try {
+            logMessage('🔍 Checking for WhatsApp verification request...');
+            
+            const verificationIndicators = [
+                'Check your WhatsApp messages',
+                'Enter the code we sent to your WhatsApp',
+                'WhatsApp',
+                'verification code',
+                'code sent to your WhatsApp'
+            ];
+            
+            const pageContent = await this.page.content();
+            
+            for (const indicator of verificationIndicators) {
+                if (pageContent.includes(indicator)) {
+                    logMessage(`⚠️ WhatsApp verification detected!`, 'warning');
+                    logMessage(`📱 Instagram sent a code to your WhatsApp`, 'info');
+                    logMessage(`✍️ Please enter the verification code in the browser window`, 'info');
+                    return true;
+                }
+            }
+            
+            try {
+                const verificationInput = await this.page.locator('input[name="email"]').first();
+                if (await verificationInput.isVisible()) {
+                    const placeholder = await verificationInput.getAttribute('placeholder');
+                    if (placeholder && placeholder.toLowerCase().includes('code')) {
+                        logMessage('⚠️ Verification code input detected!', 'warning');
+                        logMessage('✍️ Please enter the verification code from WhatsApp', 'info');
+                        return true;
+                    }
+                }
+            } catch (e) {}
+            
+            const currentUrl = this.page.url();
+            if (currentUrl.includes('codeentry') || 
+                currentUrl.includes('verify') || 
+                currentUrl.includes('challenge')) {
+                logMessage('⚠️ Verification page detected!', 'warning');
+                return true;
+            }
+            
+            return false;
+        } catch (error) {
+            logMessage(`Error checking for WhatsApp verification: ${error.message}`, 'error');
+            return false;
+        }
+    }
+
+    async waitForVerification(maxWaitSeconds = 120) {
+        logMessage(`⏳ Waiting for verification to be completed (max ${maxWaitSeconds} seconds)...`, 'info');
+        logMessage('📱 Check your WhatsApp for the verification code', 'info');
+        logMessage('✍️ Enter the code in the browser window', 'info');
+        
+        let verified = false;
+        let waited = 0;
+        
+        while (waited < maxWaitSeconds) {
+            await this.page.waitForTimeout(3000);
+            waited += 3;
+            
+            const currentUrl = this.page.url();
+            
+            const isLoggedIn = await this.checkLoginSuccess();
+            if (isLoggedIn) {
+                logMessage('✅ Verification successful! Logged in!', 'success');
+                verified = true;
+                break;
+            }
+            
+            const stillVerifying = await this.checkForWhatsAppVerification();
+            if (!stillVerifying && !currentUrl.includes('codeentry') && !currentUrl.includes('verify')) {
+                const isLoggedIn2 = await this.checkLoginSuccess();
+                if (isLoggedIn2) {
+                    logMessage('✅ Verification successful! Logged in!', 'success');
+                    verified = true;
+                    break;
+                }
+            }
+            
+            if (waited % 15 === 0) {
+                logMessage(`⏳ Still waiting for verification code... (${waited}/${maxWaitSeconds}s)`, 'info');
+            }
+        }
+        
+        if (!verified) {
+            logMessage('⚠️ Verification not completed within time limit', 'warning');
+            return false;
+        }
+        
+        return true;
+    }
+
+    async clickRecaptcha() {
+        try {
+            logMessage('🔍 Looking for reCAPTCHA checkbox...');
+            
+            await this.page.waitForTimeout(2000);
+            
+            const frames = this.page.frames();
+            let recaptchaClicked = false;
+            
+            for (const frame of frames) {
+                try {
+                    const checkbox = await frame.$('.recaptcha-checkbox-border');
+                    if (checkbox) {
+                        logMessage('✅ Found reCAPTCHA checkbox in iframe!', 'success');
+                        await checkbox.click();
+                        logMessage('🖱️ Clicked reCAPTCHA checkbox!', 'success');
+                        recaptchaClicked = true;
+                        break;
+                    }
+                } catch (e) {}
+            }
+            
+            if (!recaptchaClicked) {
+                try {
+                    const checkbox = await this.page.$('.recaptcha-checkbox-border');
+                    if (checkbox) {
+                        logMessage('✅ Found reCAPTCHA checkbox on main page!', 'success');
+                        await checkbox.click();
+                        logMessage('🖱️ Clicked reCAPTCHA checkbox!', 'success');
+                        recaptchaClicked = true;
+                    }
+                } catch (e) {}
+            }
+            
+            if (!recaptchaClicked) {
+                const altSelectors = [
+                    '#recaptcha-anchor',
+                    '.recaptcha-checkbox',
+                    'iframe[src*="recaptcha"]',
+                    'div.recaptcha-checkbox'
+                ];
+                
+                for (const selector of altSelectors) {
+                    try {
+                        const element = await this.page.$(selector);
+                        if (element) {
+                            logMessage(`✅ Found reCAPTCHA with selector: ${selector}`, 'success');
+                            await element.click();
+                            logMessage('🖱️ Clicked reCAPTCHA!', 'success');
+                            recaptchaClicked = true;
+                            break;
+                        }
+                    } catch (e) {}
+                }
+            }
+            
+            if (recaptchaClicked) {
+                logMessage('⏳ Waiting for reCAPTCHA verification...', 'info');
+                await this.page.waitForTimeout(3000);
+                
+                const currentUrl = this.page.url();
+                if (currentUrl.includes('recaptcha')) {
+                    logMessage('⚠️ Image challenge detected! Please complete it manually.', 'warning');
+                    
+                    let challengeSolved = false;
+                    for (let i = 0; i < 12; i++) {
+                        await this.page.waitForTimeout(5000);
+                        const newUrl = this.page.url();
+                        if (!newUrl.includes('recaptcha')) {
+                            challengeSolved = true;
+                            logMessage('✅ Image challenge completed!', 'success');
+                            break;
+                        }
+                        logMessage(`⏳ Waiting for image challenge... (${i+1}/12)`, 'info');
+                    }
+                    if (!challengeSolved) {
+                        logMessage('⚠️ Image challenge not completed.', 'warning');
+                    }
+                }
+                
+                return true;
+            } else {
+                logMessage('⚠️ Could not find reCAPTCHA checkbox. Please click it manually.', 'warning');
+                return false;
+            }
+            
+        } catch (error) {
+            logMessage(`Error clicking reCAPTCHA: ${error.message}`, 'error');
+            return false;
+        }
+    }
 
     async login(username, password) {
         if (!this.isInitialized || !this.page) {
@@ -130,9 +499,9 @@ class InstagramService {
         }
 
         try {
-            // Navigate to login page
             const navigated = await this.navigateToLogin();
             if (!navigated) {
+                logMessage('🔄 Retrying navigation...', 'info');
                 await this.page.goto('https://www.instagram.com/accounts/login/', {
                     waitUntil: 'commit',
                     timeout: 20000
@@ -140,7 +509,6 @@ class InstagramService {
                 await this.page.waitForTimeout(3000);
             }
 
-            // Wait for login form
             const formReady = await this.waitForLoginForm();
             if (!formReady) {
                 try {
@@ -208,12 +576,20 @@ class InstagramService {
             logMessage('⏳ Waiting for login to complete...');
             await this.page.waitForTimeout(5000);
 
-            // Check for WhatsApp verification
+            const finalUrl = this.page.url();
+            logMessage(`📍 Final URL: ${finalUrl}`);
+
             if (await this.checkForWhatsAppVerification()) {
-                logMessage('⚠️ WhatsApp verification required!', 'warning');
-                const verified = await this.waitForVerification(this.loginTimeout);
+                logMessage('⚠️⚠️⚠️ WHATSAPP VERIFICATION REQUIRED! ⚠️⚠️⚠️', 'error');
+                logMessage('📱 Instagram sent a verification code to your WhatsApp', 'info');
+                logMessage('🔐 Please enter the verification code in the browser window', 'info');
+                logMessage('⏳ You have 120 seconds to complete this...', 'info');
+                
+                const verified = await this.waitForVerification(120);
                 
                 if (verified) {
+                    logMessage('✅ Verification completed! Logging in...', 'success');
+                    
                     const success = await this.checkLoginSuccess();
                     if (success) {
                         logMessage('✅ LOGIN SUCCESSFUL!', 'success');
@@ -223,12 +599,69 @@ class InstagramService {
                             success: true, 
                             message: 'Login successful after WhatsApp verification!' 
                         };
+                    } else {
+                        await this.page.waitForTimeout(3000);
+                        const success2 = await this.checkLoginSuccess();
+                        if (success2) {
+                            logMessage('✅ LOGIN SUCCESSFUL!', 'success');
+                            await this.saveCookies();
+                            this.isLoggedIn = true;
+                            return { 
+                                success: true, 
+                                message: 'Login successful after WhatsApp verification!' 
+                            };
+                        }
+                        return { 
+                            success: false, 
+                            message: 'Verification code entered but login failed. Please try again.' 
+                        };
+                    }
+                } else {
+                    return { 
+                        success: false, 
+                        message: 'Verification timeout. Please try again.' 
+                    };
+                }
+            }
+
+            if (finalUrl.includes('recaptcha') || finalUrl.includes('challenge')) {
+                logMessage('⚠️⚠️⚠️ reCAPTCHA CHALLENGE DETECTED!', 'error');
+                logMessage('🤖 Attempting to automatically click reCAPTCHA...', 'info');
+                
+                const clicked = await this.clickRecaptcha();
+                
+                if (clicked) {
+                    logMessage('✅ reCAPTCHA checkbox clicked automatically!', 'success');
+                    await this.page.waitForTimeout(5000);
+                    
+                    if (await this.checkForWhatsAppVerification()) {
+                        logMessage('⚠️ WhatsApp verification requested after reCAPTCHA!', 'warning');
+                        const verified = await this.waitForVerification(120);
+                        if (verified) {
+                            const success = await this.checkLoginSuccess();
+                            if (success) {
+                                logMessage('✅ LOGIN SUCCESSFUL!', 'success');
+                                await this.saveCookies();
+                                this.isLoggedIn = true;
+                                return { 
+                                    success: true, 
+                                    message: 'Login successful after reCAPTCHA and verification!' 
+                                };
+                            }
+                        }
+                    }
+                    
+                    const success = await this.checkLoginSuccess();
+                    if (success) {
+                        logMessage('✅ LOGIN SUCCESSFUL after reCAPTCHA!', 'success');
+                        await this.saveCookies();
+                        this.isLoggedIn = true;
+                        return { 
+                            success: true, 
+                            message: 'Login successful! reCAPTCHA was automatically handled.' 
+                        };
                     }
                 }
-                return { 
-                    success: false, 
-                    message: 'Verification failed or timeout.' 
-                };
             }
 
             const isLoggedIn = await this.checkLoginSuccess();
@@ -237,14 +670,120 @@ class InstagramService {
                 logMessage('✅ LOGIN SUCCESSFUL!', 'success');
                 await this.saveCookies();
                 this.isLoggedIn = true;
-                return { success: true, message: 'Login successful!' };
+                return { success: true, message: 'Login successful! Check the browser window.' };
             } else {
-                return { success: false, message: 'Login failed. Check credentials.' };
+                const errorSelectors = [
+                    'p:has-text("Sorry")',
+                    'p:has-text("incorrect")',
+                    'div[role="alert"]',
+                    '[data-testid="login-error"]'
+                ];
+
+                let errorMsg = 'Login failed. Check the browser window for details.';
+                for (const selector of errorSelectors) {
+                    try {
+                        const errorEl = await this.page.$(selector);
+                        if (errorEl) {
+                            errorMsg = await this.page.textContent(selector) || errorMsg;
+                            break;
+                        }
+                    } catch (e) {}
+                }
+
+                logMessage(`❌ ${errorMsg}`, 'error');
+                return { success: false, message: errorMsg };
             }
 
         } catch (error) {
             logMessage(`❌ Login error: ${error.message}`, 'error');
+            try {
+                if (this.page) {
+                    await this.page.screenshot({ path: 'error_screenshot.png' });
+                    logMessage('📸 Error screenshot saved: error_screenshot.png');
+                }
+            } catch (e) {}
             return { success: false, message: `Error: ${error.message}` };
+        }
+    }
+
+    async checkLoginSuccess() {
+        try {
+            if (!this.page) return false;
+            
+            const url = this.page.url();
+            if (url.includes('instagram.com/direct/') || 
+                url.includes('instagram.com/accounts/edit/') ||
+                url.includes('instagram.com/explore/')) {
+                return true;
+            }
+
+            const indicators = [
+                'a[href="/accounts/edit/"]',
+                'svg[aria-label="Home"]',
+                'nav[role="navigation"]',
+                '[data-testid="user-avatar"]'
+            ];
+
+            for (const selector of indicators) {
+                try {
+                    const element = await this.page.$(selector);
+                    if (element) return true;
+                } catch (e) {}
+            }
+
+            return false;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    async saveCookies() {
+        try {
+            if (!this.context) return;
+            const cookies = await this.context.cookies();
+            fs.writeFileSync(this.cookiePath, JSON.stringify(cookies, null, 2));
+            logMessage(`🍪 Cookies saved to ${this.cookiePath}`);
+            return cookies;
+        } catch (error) {
+            logMessage(`Error saving cookies: ${error.message}`, 'error');
+            throw error;
+        }
+    }
+
+    async getStatus() {
+        try {
+            const url = this.page ? await this.page.url() : 'Not initialized';
+            return {
+                isLoggedIn: this.isLoggedIn,
+                url: url,
+                hasCookies: fs.existsSync(this.cookiePath),
+                browserOpen: this.browser !== null,
+                isInitialized: this.isInitialized
+            };
+        } catch (error) {
+            return {
+                isLoggedIn: false,
+                url: 'Error',
+                hasCookies: false,
+                browserOpen: false,
+                isInitialized: false
+            };
+        }
+    }
+
+    async close() {
+        try {
+            if (this.browser) {
+                await this.browser.close();
+                this.browser = null;
+                this.page = null;
+                this.context = null;
+                this.isLoggedIn = false;
+                this.isInitialized = false;
+                logMessage('Browser closed');
+            }
+        } catch (error) {
+            logMessage(`Error closing browser: ${error.message}`, 'error');
         }
     }
 }
@@ -252,7 +791,7 @@ class InstagramService {
 // Initialize service
 const instagramService = new InstagramService();
 
-// API Routes (keep your existing routes)
+// API Routes
 app.post('/api/initialize', async (req, res) => {
     try {
         const { headless = false } = req.body;
@@ -328,6 +867,11 @@ app.post('/api/close', async (req, res) => {
     }
 });
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
+});
+
 // Serve main HTML
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -337,4 +881,11 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`\n🚀 Server running on http://localhost:${PORT}`);
     console.log(`📱 Open this URL in your browser`);
+    console.log(`⚠️  IMPORTANT: Make sure "Headless" checkbox is UNCHECKED`);
+    console.log(`👁️  Watch the Playwright browser window that opens!`);
+    console.log(`\n📋 INSTRUCTIONS:`);
+    console.log(`1. Click "Initialize Browser" first`);
+    console.log(`2. Enter your credentials and click Login`);
+    console.log(`3. Watch the browser window for results`);
+    console.log(`4. If WhatsApp verification appears, enter the code in the browser`);
 });

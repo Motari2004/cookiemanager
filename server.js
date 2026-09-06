@@ -44,6 +44,8 @@ class InstagramService {
             process.env.CHROME_PATH,
             'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
             'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+            'C:\\Users\\PC\\AppData\\Local\\ms-playwright\\chromium-1234\\chrome-win64\\chrome.exe',
+            'C:\\Users\\PC\\AppData\\Local\\ms-playwright\\chromium-1200\\chrome-win64\\chrome.exe',
         ].filter(Boolean);
 
         for (const chromePath of possiblePaths) {
@@ -66,7 +68,6 @@ class InstagramService {
             logMessage('🚀 Launching browser...');
             
             const chromePath = await this.findChrome();
-            
             const isRender = process.env.RENDER === 'true' || process.env.NODE_ENV === 'production';
             
             const launchOptions = {
@@ -85,6 +86,8 @@ class InstagramService {
                     '--window-size=1280,720',
                     '--disable-features=IsolateOrigins,site-per-process',
                     '--disable-site-isolation-trials',
+                    '--disable-web-security',
+                    '--disable-features=BlockInsecurePrivateNetworkRequests',
                 ]
             };
 
@@ -102,7 +105,9 @@ class InstagramService {
 
             this.context = await this.browser.newContext({
                 viewport: { width: 1280, height: 720 },
-                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                locale: 'en-US',
+                timezoneId: 'America/New_York'
             });
 
             this.page = await this.context.newPage();
@@ -118,6 +123,10 @@ class InstagramService {
                 Object.defineProperty(navigator, 'languages', {
                     get: () => ['en-US', 'en'],
                 });
+                
+                // Overwrite navigator properties
+                const newProto = navigator.__proto__;
+                delete newProto.webdriver;
             });
 
             this.isInitialized = true;
@@ -135,27 +144,45 @@ class InstagramService {
         try {
             logMessage('🌐 Navigating to Instagram login page...');
             
+            // Random delay to avoid detection
+            await this.page.waitForTimeout(Math.random() * 1000 + 500);
+            
             await this.page.goto('https://www.instagram.com/accounts/login/', {
-                waitUntil: 'domcontentloaded',
-                timeout: 30000
+                waitUntil: 'networkidle',
+                timeout: 60000
             });
             
             logMessage('✅ Page loaded!', 'success');
+            
+            // Wait for any content
+            await this.page.waitForSelector('body', { timeout: 10000 });
+            
+            // Check for challenge page
+            const pageContent = await this.page.content();
+            if (pageContent.includes('challenge') || pageContent.includes('verify')) {
+                logMessage('⚠️ Instagram challenge page detected!', 'warning');
+                logMessage('🔄 Please complete the challenge manually in the browser', 'info');
+                await this.page.waitForTimeout(10000);
+            }
+            
             logMessage('⏳ Waiting for login form...');
             
-            const usernameSelectors = [
+            const selectors = [
                 'input[name="username"]',
                 'input[type="text"]',
                 'input[placeholder*="username" i]',
-                'input[placeholder*="phone" i]',
-                'input[placeholder*="email" i]'
+                'input[aria-label*="username" i]',
+                'input[aria-label*="phone" i]',
+                'input[aria-label*="email" i]',
+                'form input[type="text"]',
+                'form input:first-child'
             ];
             
             let found = false;
-            for (const selector of usernameSelectors) {
+            for (const selector of selectors) {
                 try {
                     await this.page.waitForSelector(selector, { 
-                        timeout: 5000,
+                        timeout: 8000,
                         state: 'visible'
                     });
                     logMessage(`✅ Login form found with selector: ${selector}`, 'success');
@@ -167,26 +194,42 @@ class InstagramService {
             }
             
             if (!found) {
+                // Try XPath
                 try {
-                    await this.page.waitForSelector('input', { 
-                        timeout: 5000,
-                        state: 'visible'
-                    });
-                    logMessage('✅ Found input fields on page', 'success');
+                    const xpath = '//input[@name="username" or @type="text"]';
+                    await this.page.waitForSelector(`xpath=${xpath}`, { timeout: 5000 });
+                    logMessage('✅ Login form found with XPath!', 'success');
                     found = true;
-                } catch (e) {
-                    logMessage('❌ Could not find login form', 'error');
-                }
+                } catch (e) {}
             }
             
-            await this.page.waitForTimeout(2000);
+            if (!found) {
+                const currentUrl = this.page.url();
+                logMessage(`📍 Current URL: ${currentUrl}`, 'info');
+                
+                try {
+                    const inputs = await this.page.$$('input');
+                    logMessage(`📝 Found ${inputs.length} input elements on page`, 'info');
+                    if (inputs.length > 0) {
+                        found = true;
+                        logMessage('✅ Found input elements, attempting login', 'success');
+                    }
+                } catch (e) {}
+            }
             
-            const currentUrl = this.page.url();
-            logMessage(`📍 Current URL: ${currentUrl}`);
+            // Save debug screenshot
+            await this.page.screenshot({ path: 'data/login_page_debug.png' });
+            logMessage('📸 Debug screenshot saved: data/login_page_debug.png');
+            
+            await this.page.waitForTimeout(2000);
             
             return found;
         } catch (error) {
             logMessage(`❌ Navigation error: ${error.message}`, 'error');
+            try {
+                await this.page.screenshot({ path: 'data/navigation_error.png' });
+                logMessage('📸 Error screenshot saved: data/navigation_error.png');
+            } catch (e) {}
             return false;
         }
     }
@@ -199,7 +242,8 @@ class InstagramService {
                 'input[name="username"]',
                 'input[type="text"]',
                 'input[placeholder*="username" i]',
-                'form input'
+                'form input',
+                'input[aria-label*="username" i]'
             ];
             
             for (const selector of selectors) {
@@ -227,6 +271,7 @@ class InstagramService {
         try {
             logMessage('🔍 Looking for username field...');
             
+            // Try getByRole first
             try {
                 const usernameField = await this.page.getByRole('textbox', { 
                     name: 'Mobile number, username or email' 
@@ -236,6 +281,7 @@ class InstagramService {
                 return usernameField;
             } catch (e) {}
             
+            // Try by placeholder
             try {
                 const field = await this.page.locator('input[placeholder*="username" i]').first();
                 if (await field.isVisible()) {
@@ -244,6 +290,7 @@ class InstagramService {
                 }
             } catch (e) {}
             
+            // Try by name
             try {
                 const field = await this.page.locator('input[name="username"]').first();
                 if (await field.isVisible()) {
@@ -252,6 +299,7 @@ class InstagramService {
                 }
             } catch (e) {}
             
+            // Try by type
             try {
                 const field = await this.page.locator('input[type="text"]').first();
                 if (await field.isVisible()) {
@@ -271,6 +319,7 @@ class InstagramService {
         try {
             logMessage('🔍 Looking for password field...');
             
+            // Try getByRole first
             try {
                 const passwordField = await this.page.getByRole('textbox', { 
                     name: 'Password' 
@@ -280,6 +329,7 @@ class InstagramService {
                 return passwordField;
             } catch (e) {}
             
+            // Try by type
             try {
                 const field = await this.page.locator('input[type="password"]').first();
                 if (await field.isVisible()) {
@@ -288,6 +338,7 @@ class InstagramService {
                 }
             } catch (e) {}
             
+            // Try by name
             try {
                 const field = await this.page.locator('input[name="password"]').first();
                 if (await field.isVisible()) {
@@ -698,8 +749,8 @@ class InstagramService {
             logMessage(`❌ Login error: ${error.message}`, 'error');
             try {
                 if (this.page) {
-                    await this.page.screenshot({ path: 'error_screenshot.png' });
-                    logMessage('📸 Error screenshot saved: error_screenshot.png');
+                    await this.page.screenshot({ path: 'data/error_screenshot.png' });
+                    logMessage('📸 Error screenshot saved: data/error_screenshot.png');
                 }
             } catch (e) {}
             return { success: false, message: `Error: ${error.message}` };
@@ -867,9 +918,13 @@ app.post('/api/close', async (req, res) => {
     }
 });
 
-// Health check endpoint
+// Health check endpoint for Render
 app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
+    res.status(200).json({ 
+        status: 'OK', 
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
 });
 
 // Serve main HTML
@@ -888,4 +943,6 @@ app.listen(PORT, () => {
     console.log(`2. Enter your credentials and click Login`);
     console.log(`3. Watch the browser window for results`);
     console.log(`4. If WhatsApp verification appears, enter the code in the browser`);
+    console.log(`\n🔍 The script will detect WhatsApp verification requests`);
+    console.log(`📌 It will wait for you to enter the verification code\n`);
 });
